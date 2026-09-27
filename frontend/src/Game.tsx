@@ -120,7 +120,7 @@ export default function Game({ roomId, playerName }: GameProps) {
     };
 
     socket.on("connect", () => {
-      setMySocketId(socket.id);
+      setMySocketId(socket.id || null);
       joinRoom();
     });
     socket.on("disconnect", () => {
