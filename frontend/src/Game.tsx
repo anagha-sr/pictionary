@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import { io, type Socket } from "socket.io-client";
 import type { RoomPlayer } from "./api/rooms";
+import DrawingCanvas, { type DrawingState } from "./DrawingCanvas";
 import { useRoom } from "./hooks/useRoom";
 
 interface GameProps {
@@ -29,7 +30,20 @@ export default function Game({ roomId, playerName }: GameProps) {
   const [countdownValue, setCountdownValue] = useState<number | null>(null);
   const [guessText, setGuessText] = useState("");
   const [guessMessages, setGuessMessages] = useState<GuessMessage[]>([]);
+  const [celebration, setCelebration] = useState<{ playerName: string; word: string } | null>(null);
+  const [drawingState, setDrawingState] = useState<DrawingState>({
+    strokes: [],
+    currentStroke: null,
+  });
   const socketRef = useRef<Socket | null>(null);
+  const [gameSocket, setGameSocket] = useState<Socket | null>(null);
+
+  useEffect(() => {
+    if (!celebration) return;
+
+    const timeout = window.setTimeout(() => setCelebration(null), 3200);
+    return () => window.clearTimeout(timeout);
+  }, [celebration]);
 
   useEffect(() => {
     if (countdownEndsAt === null) return;
@@ -50,6 +64,7 @@ export default function Game({ roomId, playerName }: GameProps) {
 
     const socket = io(SOCKET_URL, { autoConnect: false });
     socketRef.current = socket;
+    setGameSocket(socket);
     const joinRoom = () => socket.emit("join-room", { roomId, playerName });
     const handleUserJoined = (update: { player: RoomPlayer }) => {
       setPlayers((currentPlayers) =>
@@ -67,6 +82,7 @@ export default function Game({ roomId, playerName }: GameProps) {
     const handleRoundStarted = (round: { drawerId: string }) => {
       setDrawerId(round.drawerId);
       setSecretWord(null);
+      setDrawingState({ strokes: [], currentStroke: null });
       setGuessMessages([]);
       setGuessText("");
       setCountdownEndsAt(null);
@@ -84,6 +100,7 @@ export default function Game({ roomId, playerName }: GameProps) {
       ]);
     };
     const handleGuessCorrect = (message: { playerName: string; word: string }) => {
+      setCelebration(message);
       setGuessMessages((currentMessages) => [
         ...currentMessages,
         {
@@ -93,6 +110,13 @@ export default function Game({ roomId, playerName }: GameProps) {
           correct: true,
         },
       ]);
+    };
+    const handleDrawingState = (state: DrawingState) => setDrawingState(state);
+    const handleStrokesUpdated = (update: { strokes: DrawingState["strokes"] }) => {
+      setDrawingState((current) => ({ ...current, strokes: update.strokes }));
+    };
+    const handleCurrentStrokeUpdated = (update: { currentStroke: DrawingState["currentStroke"] }) => {
+      setDrawingState((current) => ({ ...current, currentStroke: update.currentStroke }));
     };
 
     socket.on("connect", () => {
@@ -115,9 +139,13 @@ export default function Game({ roomId, playerName }: GameProps) {
     socket.on("guess-message", handleGuessMessage);
     socket.on("guess-correct", handleGuessCorrect);
     socket.on("guess-error", (message: { message: string }) => setSocketError(message.message));
+    socket.on("drawing-state", handleDrawingState);
+    socket.on("strokes-updated", handleStrokesUpdated);
+    socket.on("current-stroke-updated", handleCurrentStrokeUpdated);
     socket.on("round-ended", () => {
       setDrawerId(null);
       setSecretWord(null);
+      setDrawingState({ strokes: [], currentStroke: null });
       setCountdownEndsAt(null);
       setCountdownValue(null);
     });
@@ -127,6 +155,7 @@ export default function Game({ roomId, playerName }: GameProps) {
     return () => {
       socket.disconnect();
       socketRef.current = null;
+      setGameSocket(null);
       setMySocketId(null);
     };
   }, [room, roomId, playerName]);
@@ -157,81 +186,115 @@ export default function Game({ roomId, playerName }: GameProps) {
   }
 
   if (loading) {
-    return <p>Loading...</p>;
+    return <p className="status-card">Loading game…</p>;
   }
 
   if (error) {
-    return <p>{error.message}</p>;
+    return <p className="status-card" role="alert">{error.message}</p>;
   }
 
   if (!room) {
-    return <p>Room not found.</p>;
+    return <p className="status-card">Room not found.</p>;
   }
 
   return (
-    <div>
-      <div className="room-code-row">
-        <h1>Room {room.id}</h1>
-        <button onClick={copyRoomCode}>
-          {copied ? "Copied!" : "Copy code"}
-        </button>
-      </div>
-
-      <h2>Players</h2>
-
-      <ul>
-        {players.map((player) => (
-          <li key={player.id}>{player.name}</li>
-        ))}
-      </ul>
-
-      <section className="round-controls">
-        {drawerId ? (
-          <>
-            <p>
-              {drawerId === mySocketId
-                ? "You are drawing."
-                : `${players.find((player) => player.id === drawerId)?.name ?? "A player"} is drawing.`}
-            </p>
-            {secretWord && <p>Your word: <strong>{secretWord}</strong></p>}
-            {drawerId === mySocketId && <button onClick={finishRound}>End round</button>}
-          </>
-        ) : countdownValue !== null ? (
-          <p>Round starts in {countdownValue}…</p>
-        ) : (
-          <p>{players.length < 2 ? "Waiting for another player to join." : "Waiting for round to start…"}</p>
-        )}
-      </section>
-
-      {(drawerId || guessMessages.length > 0) && (
-        <section className="guess-chat">
-          <h2>Guesses</h2>
-          <ul aria-live="polite">
-            {guessMessages.map((message) => (
-              <li key={message.id}>
-                <strong>{message.playerName}</strong> {message.text}
-              </li>
-            ))}
-          </ul>
-          {drawerId && drawerId !== mySocketId && (
-            <form onSubmit={submitGuess}>
-              <label htmlFor="guess-input">Your guess</label>
-              <input
-                id="guess-input"
-                value={guessText}
-                onChange={(event) => setGuessText(event.target.value)}
-                autoComplete="off"
-                maxLength={80}
-              />
-              <button type="submit" disabled={!guessText.trim()}>
-                Send guess
-              </button>
-            </form>
+    <div className="game-shell">
+      <div className="game-layout">
+        <section className="play-area">
+          {gameSocket && (
+            <DrawingCanvas
+              roomId={roomId}
+              socket={gameSocket}
+              canDraw={drawerId !== null && drawerId === mySocketId}
+              drawingState={drawingState}
+            />
           )}
         </section>
-      )}
 
-      {socketError && <p role="alert">{socketError}</p>}
+        <aside className="game-sidebar">
+          <div className="room-code-row">
+            <div className="room-code-info">
+              <span className="eyebrow">ROOM CODE</span>
+              <div className="room-code-value">
+                <h1>{room.id}</h1>
+                <button className="button button-secondary copy-button" onClick={copyRoomCode}>
+                  {copied ? "Copied!" : "Copy code"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <section className="round-controls">
+            {drawerId ? (
+              <>
+                <p>
+                  {drawerId === mySocketId
+                    ? "You are drawing."
+                    : `${players.find((player) => player.id === drawerId)?.name ?? "A player"} is drawing.`}
+                </p>
+                {secretWord && <p>Your word: <strong>{secretWord}</strong></p>}
+                {drawerId === mySocketId && <button onClick={finishRound}>Stop round</button>}
+              </>
+            ) : countdownValue !== null ? (
+              <p>Round starts in {countdownValue}…</p>
+            ) : (
+              <p>{players.length < 2 ? "Waiting for another player to join." : "Waiting for round to start…"}</p>
+            )}
+          </section>
+
+          <section className="players-card">
+            <h2>Players</h2>
+            <ul className="player-list">
+              {players.map((player) => (
+                <li key={player.id}>
+                  <span className="player-avatar">{player.name.slice(0, 1).toUpperCase()}</span>
+                  <span>{player.name}</span>
+                  {player.id === mySocketId && <span className="you-badge">(You)</span>}
+                  {player.id === drawerId && <span className="drawer-badge">DRAWING</span>}
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          {(drawerId || guessMessages.length > 0) && (
+            <section className="guess-chat">
+              <h2>Guesses</h2>
+              <ul aria-live="polite">
+                {guessMessages.map((message) => (
+                  <li key={message.id}>
+                    <strong>{message.playerName}</strong> {message.text}
+                  </li>
+                ))}
+              </ul>
+              {drawerId && drawerId !== mySocketId && (
+                <form onSubmit={submitGuess}>
+                  <label className="visually-hidden" htmlFor="guess-input">Your guess</label>
+                  <input
+                    className="guess-input"
+                    id="guess-input"
+                    value={guessText}
+                    onChange={(event) => setGuessText(event.target.value)}
+                    autoComplete="off"
+                    maxLength={80}
+                  />
+                  <button type="submit" disabled={!guessText.trim()}>
+                    Send guess
+                  </button>
+                </form>
+              )}
+            </section>
+          )}
+        </aside>
+      </div>
+
+      {socketError && <p className="socket-error" role="alert">{socketError}</p>}
+      {celebration && (
+        <div className="guess-celebration" role="status" aria-live="polite">
+          <strong>Correct guess!</strong>
+          <span>{celebration.playerName} guessed “{celebration.word}”</span>
+          <span className="celebration-confetti" aria-hidden="true">✦　✳　✦　✳　✦</span>
+        </div>
+      )}
     </div>
   );
 }

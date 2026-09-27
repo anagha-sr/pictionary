@@ -41,9 +41,9 @@ function App() {
 
   if (activeRoomId) {
     return (
-      <main className="room-page">
-        <button className="back-button" onClick={() => setActiveRoomId(null)}>
-          Back
+      <main className="game-page">
+        <button className="back-button button button-quiet" onClick={() => setActiveRoomId(null)}>
+          ← Back to lobby
         </button>
         <Game roomId={activeRoomId} playerName={playerName.trim()} />
       </main>
@@ -51,10 +51,15 @@ function App() {
   }
 
   return (
-    <main className="room-page">
-      <h1>Play Pictionary</h1>
-      <div>
-        <label htmlFor="player-name">Your username: </label>
+    <main className="landing-page">
+      <nav className="brand-bar"><span className="brand-mark">✦</span><span>Pictionary</span></nav>
+      <section className="lobby-card">
+      <div className="lobby-intro">
+        <h1>Play Pictionary</h1>
+        <p>Create a room or enter a room code to join a game.</p>
+      </div>
+      <div className="name-field">
+        <label htmlFor="player-name">YOUR NAME</label>
         <input
           id="player-name"
           value={playerName}
@@ -66,31 +71,33 @@ function App() {
       </div>
 
       <div className="room-actions">
-        <button onClick={handleCreateRoom} disabled={isLoading || playerName.trim().length === 0}>
-          {isLoading ? "Please wait…" : "Create a room"}
+        <button className="button button-primary" onClick={handleCreateRoom} disabled={isLoading || playerName.trim().length === 0}>
+          {isLoading ? "Please wait…" : "Create a room  →"}
         </button>
 
         <span className="or">or</span>
 
-        <form onSubmit={handleJoinRoom}>
-          <label htmlFor="room-code">Join with a room code</label>
+        <form className="join-form" onSubmit={handleJoinRoom}>
+          <label htmlFor="room-code">HAVE A ROOM CODE?</label>
           <input
             id="room-code"
             value={roomCode}
             onChange={(event) => setRoomCode(event.target.value)}
-            placeholder="Enter room code"
+            placeholder="e.g. ABC123"
             autoComplete="off"
           />
           <button
+            className="button button-secondary"
             type="submit"
             disabled={isLoading || roomCode.trim().length === 0 || playerName.trim().length === 0}
           >
-            Join room
+            Join room  →
           </button>
         </form>
       </div>
 
       {error && <p role="alert">{error}</p>}
+      </section>
     </main>
   );
 }

@@ -1,6 +1,41 @@
 import type { Server } from "socket.io";
 import { addRoomPlayer, findRoom, removeRoomPlayer } from "../rooms/rooms.store.js";
-import { createRound, endRound, getActiveRound } from "../rooms/rounds.store.js";
+import {
+  createRound,
+  endRound,
+  getActiveRound,
+  updateCurrentStroke,
+  updateRoundStrokes,
+} from "../rooms/rounds.store.js";
+import type { DrawingPoint, DrawingStroke } from "../rooms/rounds.store.js";
+import { isAcceptedAnswer } from "../rooms/words.js";
+
+function isDrawingPoint(value: unknown): value is DrawingPoint {
+  if (typeof value !== "object" || value === null) return false;
+
+  const point = value as Record<string, unknown>;
+  return (
+    typeof point.x === "number" && Number.isFinite(point.x) && point.x >= 0 && point.x <= 1000 &&
+    typeof point.y === "number" && Number.isFinite(point.y) && point.y >= 0 && point.y <= 1000
+  );
+}
+
+function isDrawingStroke(value: unknown): value is DrawingStroke {
+  if (typeof value !== "object" || value === null) return false;
+
+  const stroke = value as Record<string, unknown>;
+  return (
+    Array.isArray(stroke.points) && stroke.points.length > 0 && stroke.points.length <= 5000 &&
+    stroke.points.every(isDrawingPoint) &&
+    typeof stroke.color === "string" && /^#[0-9a-f]{6}$/i.test(stroke.color) &&
+    typeof stroke.size === "number" && Number.isFinite(stroke.size) && stroke.size >= 1 && stroke.size <= 50 &&
+    typeof stroke.eraser === "boolean"
+  );
+}
+
+function isDrawingStrokes(value: unknown): value is DrawingStroke[] {
+  return Array.isArray(value) && value.length <= 2000 && value.every(isDrawingStroke);
+}
 
 export function setupSocketHandlers(io: Server) {
   let nextGuessMessageId = 0;
@@ -31,6 +66,10 @@ export function setupSocketHandlers(io: Server) {
 
       const round = createRound(roomId, currentRoom.players);
       io.to(roomId).emit("round-started", { drawerId: round.drawerId });
+      io.to(roomId).emit("drawing-state", {
+        strokes: round.strokes,
+        currentStroke: round.currentStroke,
+      });
       io.to(round.drawerId).emit("your-word", { word: round.word });
     }, 5000);
 
@@ -40,6 +79,16 @@ export function setupSocketHandlers(io: Server) {
 
   io.on("connection", (socket) => {
     console.log("Player connected:", socket.id);
+
+    const getDrawableRoomId = (roomId: unknown): string | null => {
+      if (typeof roomId !== "string") return null;
+
+      const room = findRoom(roomId.trim());
+      const round = room && getActiveRound(room.id);
+      if (!room || !socket.rooms.has(room.id) || round?.drawerId !== socket.id) return null;
+
+      return room.id;
+    };
 
     socket.on("join-room", (payload: { roomId?: unknown; playerName?: unknown }) => {
       if (typeof payload?.roomId !== "string" || typeof payload.playerName !== "string") {
@@ -66,6 +115,10 @@ export function setupSocketHandlers(io: Server) {
         const activeRound = getActiveRound(roomId);
         if (activeRound) {
           socket.emit("round-started", { drawerId: activeRound.drawerId });
+          socket.emit("drawing-state", {
+            strokes: activeRound.strokes,
+            currentStroke: activeRound.currentStroke,
+          });
           if (activeRound.drawerId === socket.id) {
             socket.emit("your-word", { word: activeRound.word });
           }
@@ -107,7 +160,7 @@ export function setupSocketHandlers(io: Server) {
       const guess = payload.guess.trim();
       if (!guess) return;
 
-      if (guess.toLowerCase() === round.word.toLowerCase()) {
+      if (isAcceptedAnswer(round.word, guess)) {
         io.to(room.id).emit("guess-correct", {
           playerName: player.name,
           word: round.word,
@@ -123,6 +176,23 @@ export function setupSocketHandlers(io: Server) {
         playerName: player.name,
         guess,
       });
+    });
+
+    socket.on("update-strokes", (payload: { roomId?: unknown; strokes?: unknown }) => {
+      const roomId = getDrawableRoomId(payload?.roomId);
+      if (!roomId || !isDrawingStrokes(payload.strokes)) return;
+
+      const round = updateRoundStrokes(roomId, socket.id, payload.strokes);
+      if (round) socket.to(roomId).emit("strokes-updated", { strokes: round.strokes });
+    });
+
+    socket.on("update-current-stroke", (payload: { roomId?: unknown; currentStroke?: unknown }) => {
+      const roomId = getDrawableRoomId(payload?.roomId);
+      const currentStroke = payload?.currentStroke;
+      if (!roomId || (currentStroke !== null && !isDrawingStroke(currentStroke))) return;
+
+      const round = updateCurrentStroke(roomId, socket.id, currentStroke);
+      if (round) socket.to(roomId).emit("current-stroke-updated", { currentStroke: round.currentStroke });
     });
 
     socket.on("disconnecting", () => {

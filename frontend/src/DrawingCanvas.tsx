@@ -1,31 +1,45 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { Socket } from "socket.io-client";
 
 const CANVAS_SIZE = 1000;
 
-type Point = {
+export type DrawingPoint = {
   x: number;
   y: number;
 };
 
-type Stroke = {
-  points: Point[];
+export type DrawingStroke = {
+  points: DrawingPoint[];
   color: string;
   size: number;
   eraser: boolean;
 };
 
-export default function DrawingCanvas() {
+export interface DrawingState {
+  strokes: DrawingStroke[];
+  currentStroke: DrawingStroke | null;
+}
+
+interface DrawingCanvasProps {
+  roomId: string;
+  socket: Socket;
+  canDraw: boolean;
+  drawingState: DrawingState;
+}
+
+export default function DrawingCanvas({ roomId, socket, canDraw, drawingState }: DrawingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [strokes, setStrokes] = useState<Stroke[]>([]);
-  const [redoStack, setRedoStack] = useState<Stroke[]>([]);
+  const [strokes, setStrokes] = useState<DrawingStroke[]>([]);
+  const [redoStack, setRedoStack] = useState<DrawingStroke[]>([]);
+  const [remoteCurrentStroke, setRemoteCurrentStroke] = useState<DrawingStroke | null>(null);
 
   const [color, setColor] = useState("#000000");
   const [brushSize, setBrushSize] = useState(8);
   const [eraser, setEraser] = useState(false);
 
   const isDrawingRef = useRef(false);
-  const currentStrokeRef = useRef<Stroke | null>(null);
+  const currentStrokeRef = useRef<DrawingStroke | null>(null);
 
   /*
    * --------------------------------------------------
@@ -35,10 +49,8 @@ export default function DrawingCanvas() {
    * All coordinates here are in the fixed
    * 1000 × 1000 logical coordinate system.
    */
-  console.log(redoStack);
-  
   const drawStroke = useCallback(
-    (ctx: CanvasRenderingContext2D, stroke: Stroke) => {
+    (ctx: CanvasRenderingContext2D, stroke: DrawingStroke) => {
       if (stroke.points.length === 0) {
         return;
       }
@@ -144,7 +156,20 @@ export default function DrawingCanvas() {
     for (const stroke of strokes) {
       drawStroke(ctx, stroke);
     }
-  }, [strokes, drawStroke]);
+    if (remoteCurrentStroke) drawStroke(ctx, remoteCurrentStroke);
+  }, [strokes, remoteCurrentStroke, drawStroke]);
+
+  useEffect(() => {
+    if (canDraw) return;
+
+    setStrokes(drawingState.strokes);
+    setRemoteCurrentStroke(drawingState.currentStroke);
+    setRedoStack([]);
+  }, [drawingState, canDraw]);
+
+  useEffect(() => {
+    if (canDraw) socket.emit("update-strokes", { roomId, strokes });
+  }, [strokes, canDraw, roomId, socket]);
 
   /*
    * --------------------------------------------------
@@ -179,6 +204,12 @@ export default function DrawingCanvas() {
     };
   }, [setupCanvas]);
 
+  useEffect(() => {
+    if (canDraw) {
+      socket.emit("update-current-stroke", { roomId, currentStroke: null });
+    }
+  }, [canDraw, roomId, socket]);
+
   /*
    * --------------------------------------------------
    * Convert screen coordinates → 1000 × 1000
@@ -186,7 +217,7 @@ export default function DrawingCanvas() {
    */
   const getCanvasPoint = (
     event: React.PointerEvent<HTMLCanvasElement>,
-  ): Point | null => {
+  ): DrawingPoint | null => {
     const canvas = canvasRef.current;
 
     if (!canvas) {
@@ -230,6 +261,8 @@ export default function DrawingCanvas() {
    * --------------------------------------------------
    */
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!canDraw) return;
+
     const point = getCanvasPoint(event);
 
     if (!point) {
@@ -240,7 +273,7 @@ export default function DrawingCanvas() {
 
     isDrawingRef.current = true;
 
-    const stroke: Stroke = {
+    const stroke: DrawingStroke = {
       points: [point],
       color,
       size: brushSize,
@@ -248,6 +281,7 @@ export default function DrawingCanvas() {
     };
 
     currentStrokeRef.current = stroke;
+    socket.emit("update-current-stroke", { roomId, currentStroke: stroke });
 
     /*
      * Draw the initial point immediately.
@@ -273,7 +307,7 @@ export default function DrawingCanvas() {
    * --------------------------------------------------
    */
   const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawingRef.current) {
+    if (!canDraw || !isDrawingRef.current) {
       return;
     }
 
@@ -290,6 +324,7 @@ export default function DrawingCanvas() {
     }
 
     stroke.points.push(point);
+    socket.emit("update-current-stroke", { roomId, currentStroke: stroke });
 
     const canvas = canvasRef.current;
 
@@ -331,6 +366,8 @@ export default function DrawingCanvas() {
       return;
     }
 
+    socket.emit("update-current-stroke", { roomId, currentStroke: null });
+
     /*
      * Save completed stroke to history.
      */
@@ -350,6 +387,8 @@ export default function DrawingCanvas() {
    * --------------------------------------------------
    */
   const undo = () => {
+    if (!canDraw || strokes.length === 0) return;
+
     setStrokes((previous) => {
       if (previous.length === 0) {
         return previous;
@@ -369,6 +408,8 @@ export default function DrawingCanvas() {
    * --------------------------------------------------
    */
   const redo = () => {
+    if (!canDraw || redoStack.length === 0) return;
+
     setRedoStack((previous) => {
       if (previous.length === 0) {
         return previous;
@@ -388,6 +429,8 @@ export default function DrawingCanvas() {
    * --------------------------------------------------
    */
   const clearCanvas = () => {
+    if (!canDraw) return;
+
     setStrokes([]);
     setRedoStack([]);
   };
@@ -498,7 +541,7 @@ export default function DrawingCanvas() {
             type="color"
             value={color}
             onChange={(event) => setColor(event.target.value)}
-            disabled={eraser}
+            disabled={eraser || !canDraw}
             className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-transparent p-1 disabled:cursor-not-allowed disabled:opacity-50"
           />
         </label>
@@ -513,6 +556,7 @@ export default function DrawingCanvas() {
             max="50"
             value={brushSize}
             onChange={(event) => setBrushSize(Number(event.target.value))}
+            disabled={!canDraw}
             className="w-28 cursor-pointer"
           />
 
@@ -523,6 +567,7 @@ export default function DrawingCanvas() {
         <button
           type="button"
           onClick={() => setEraser((previous) => !previous)}
+          disabled={!canDraw}
           className={`rounded px-3 py-2 text-sm font-medium transition ${
             eraser
               ? "bg-gray-800 text-white"
@@ -536,7 +581,7 @@ export default function DrawingCanvas() {
         <button
           type="button"
           onClick={undo}
-          disabled={strokes.length === 0}
+          disabled={!canDraw || strokes.length === 0}
           className="rounded bg-gray-100 px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Undo
@@ -546,7 +591,7 @@ export default function DrawingCanvas() {
         <button
           type="button"
           onClick={redo}
-          disabled={redoStack.length === 0}
+          disabled={!canDraw || redoStack.length === 0}
           className="rounded bg-gray-100 px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Redo
@@ -556,6 +601,7 @@ export default function DrawingCanvas() {
         <button
           type="button"
           onClick={clearCanvas}
+          disabled={!canDraw}
           className="rounded bg-gray-100 px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-200"
         >
           Clear
@@ -575,7 +621,7 @@ export default function DrawingCanvas() {
       <div className="drawing-canvas-wrapper">
         <canvas
           ref={canvasRef}
-          className="drawing-canvas"
+          className={`drawing-canvas ${canDraw ? "" : "drawing-canvas-readonly"}`}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={finishDrawing}
