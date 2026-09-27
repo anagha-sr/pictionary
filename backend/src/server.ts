@@ -1,7 +1,7 @@
 import { createServer } from "http";
-import app from "./app.ts";
+import app from "./app.js";
 import { Server } from "socket.io";
-import { setupSocketHandlers } from "./sockets/index.ts";
+import { setupSocketHandlers } from "./sockets/index.js";
 
 const httpServer = createServer(app);
 
